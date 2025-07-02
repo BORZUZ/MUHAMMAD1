@@ -1,0 +1,206 @@
+import asyncio
+import datetime
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import CommandStart
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.storage.memory import MemoryStorage
+
+# 🔐 Sozlamalar
+TOKEN = "6745784276:AAEWvJgWRfScJ-d-120vhkI72yTp2nQE53E"  # <-- Bot tokeningizni yozing
+CHANNEL_ID = -1002333052171  # <-- Kanal ID (manfiy belgi bilan)
+ADMIN_IDS = [6595579022, 123456789]  # <-- Bir nechta admin ID'lar
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+# 📦 Mahsulotlar ro'yxati
+mahsulotlar = {
+    "ST001": {"nom": "Piramida", "narx": 20000},
+    "ST002": {"nom": "Bermuda", "narx": 15000},
+    "ST003": {"nom": "Mozaika", "narx": 18000},
+}
+
+hisob_savat = []
+hisob_tarixi = []
+
+# 🔁 States
+class AddProduct(StatesGroup):
+    kod = State()
+    nom = State()
+    narx = State()
+
+class EditPrice(StatesGroup):
+    narx = State()
+
+class HisobKitob(StatesGroup):
+    mahsulot_kod = State()
+    soni = State()
+
+# 📋 Bosh menu
+async def bosh_menu():
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Ro'yxat", callback_data="show"),
+         InlineKeyboardButton(text="➕ Qo‘shish", callback_data="add")],
+        [InlineKeyboardButton(text="✏️ O‘zgartirish", callback_data="edit"),
+         InlineKeyboardButton(text="🗑 O‘chirish", callback_data="delete")],
+        [InlineKeyboardButton(text="🧾 Hisob-kitob qilish", callback_data="hisob")],
+        [InlineKeyboardButton(text="📂 Tarix", callback_data="history")]
+    ])
+    return kb
+
+@dp.message(CommandStart())
+async def start(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return await message.answer("Ruxsat yo‘q")
+    await message.answer("Boshqaruv menyusi:", reply_markup=await bosh_menu())
+
+@dp.callback_query(F.data == "show")
+async def show_all(call: types.CallbackQuery):
+    text = "Mahsulotlar ro'yxati:\n"
+    for kod, m in mahsulotlar.items():
+        text += f"{kod} – {m['nom']} ({m['narx']} so'm)\n"
+    await call.message.edit_text(text, reply_markup=await bosh_menu())
+
+@dp.callback_query(F.data == "add")
+async def add_start(call: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AddProduct.kod)
+    await call.message.edit_text("Mahsulot kodi? (masalan: ST010)")
+
+@dp.message(AddProduct.kod)
+async def add_nom(message: types.Message, state: FSMContext):
+    await state.update_data(kod=message.text.strip())
+    await state.set_state(AddProduct.nom)
+    await message.answer("Mahsulot nomi?")
+
+@dp.message(AddProduct.nom)
+async def add_narx(message: types.Message, state: FSMContext):
+    await state.update_data(nom=message.text.strip())
+    await state.set_state(AddProduct.narx)
+    await message.answer("Mahsulot narxi?")
+
+@dp.message(AddProduct.narx)
+async def add_done(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    mahsulotlar[data['kod']] = {"nom": data['nom'], "narx": int(message.text.strip())}
+    await message.answer(f"Qo‘shildi: {data['kod']} – {data['nom']} ({message.text.strip()} so‘m)", reply_markup=await bosh_menu())
+    await state.clear()
+
+@dp.callback_query(F.data == "delete")
+async def del_start(call: types.CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardBuilder()
+    for kod in mahsulotlar:
+        kb.button(text=kod, callback_data=f"del_{kod}")
+    kb.adjust(2)
+    await call.message.edit_text("Qaysi mahsulotni o‘chirasiz?", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("del_"))
+async def del_do(call: types.CallbackQuery):
+    kod = call.data[4:]
+    if kod in mahsulotlar:
+        del mahsulotlar[kod]
+        await call.message.edit_text(f"O‘chirildi: {kod}", reply_markup=await bosh_menu())
+
+@dp.callback_query(F.data == "edit")
+async def edit_start(call: types.CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardBuilder()
+    for kod in mahsulotlar:
+        kb.button(text=kod, callback_data=f"edit_{kod}")
+    kb.adjust(2)
+    await call.message.edit_text("Qaysi mahsulot narxini o‘zgartirasiz?", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("edit_"))
+async def edit_price_input(call: types.CallbackQuery, state: FSMContext):
+    kod = call.data[5:]
+    if kod in mahsulotlar:
+        await state.set_state(EditPrice.narx)
+        await state.update_data(kod=kod)
+        await call.message.edit_text(f"Yangi narxni kiriting: {kod}")
+
+@dp.message(EditPrice.narx)
+async def edit_price_done(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    mahsulotlar[data['kod']]['narx'] = int(message.text.strip())
+    await message.answer(f"Yangilandi: {data['kod']} narxi {message.text.strip()} so‘m", reply_markup=await bosh_menu())
+    await state.clear()
+
+@dp.callback_query(F.data == "hisob")
+async def start_hisob(call: types.CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardBuilder()
+    for kod, m in mahsulotlar.items():
+        kb.button(text=f"{kod} ({m['nom']})", callback_data=f"hisob_{kod}")
+    kb.adjust(2)
+    await call.message.edit_text("Hisob-kitob uchun mahsulot tanlang:", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("hisob_"))
+async def tanlash_soni(call: types.CallbackQuery, state: FSMContext):
+    kod = call.data[6:]
+    await state.set_state(HisobKitob.soni)
+    await state.update_data(kod=kod)
+    await call.message.edit_text(f"{kod} – nechta dona?")
+
+@dp.message(HisobKitob.soni)
+async def saqlash_hisob(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    kod = data['kod']
+    soni = int(message.text.strip())
+    nom = mahsulotlar[kod]['nom']
+    narx = mahsulotlar[kod]['narx']
+    summa = soni * narx
+
+    # Agar mavjud bo‘lsa jamlab qo‘shamiz
+    mavjud = next((x for x in hisob_savat if x['kod'] == kod), None)
+    if mavjud:
+        mavjud['soni'] += soni
+        mavjud['summa'] += summa
+    else:
+        hisob_savat.append({"kod": kod, "nom": nom, "soni": soni, "summa": summa})
+
+    javob = f"✅ Qo‘shildi: {nom} x {soni} = {summa} so‘m\n\n"
+    javob += "Yana mahsulot tanlang yoki /yakunla yozing."
+
+    kb = InlineKeyboardBuilder()
+    for kod, m in mahsulotlar.items():
+        kb.button(text=f"{kod} ({m['nom']})", callback_data=f"hisob_{kod}")
+    kb.adjust(2)
+
+    await message.answer(javob, reply_markup=kb.as_markup())
+    await state.clear()
+
+@dp.message(F.text.lower() == "/yakunla")
+async def yakunla(message: types.Message):
+    if not hisob_savat:
+        return await message.answer("Hisob-kitob bo‘sh.")
+    jami_summa = sum(x['summa'] for x in hisob_savat)
+    jami_soni = sum(x['soni'] for x in hisob_savat)
+    today = datetime.date.today()
+    matn = f"📦 Yakuniy hisob-kitob ({today}):\n\n"
+    for i, item in enumerate(hisob_savat, 1):
+        matn += f"{i}) {item['nom']} – {item['soni']} dona = {item['summa']} so‘m\n"
+    matn += f"\n📌 Jami soni: {jami_soni} dona\n💰 Jami summa: {jami_summa} so‘m"
+
+    hisob_tarixi.append(matn)
+    if len(hisob_tarixi) > 5:
+        hisob_tarixi.pop(0)
+
+    await bot.send_message(CHANNEL_ID, matn)
+    hisob_savat.clear()
+    await message.answer("✅ Yakunlandi va kanalga yuborildi.", reply_markup=await bosh_menu())
+
+@dp.callback_query(F.data == "history")
+async def show_history(call: types.CallbackQuery):
+    if not hisob_tarixi:
+        return await call.message.answer("Tarix bo‘sh.")
+    text = "🕘 So‘nggi hisob-kitoblar:\n\n"
+    for i, h in enumerate(hisob_tarixi[::-1], 1):
+        text += f"🔹 {i}-hisob:\n{h}\n\n"
+    await call.message.answer(text, reply_markup=await bosh_menu())
+
+# ▶️ Ishga tushirish
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
